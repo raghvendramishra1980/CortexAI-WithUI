@@ -1,89 +1,120 @@
 import os
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, Any, Tuple
 
 from google import genai
+from .base_client import BaseAIClient
 
 
-class GeminiClient:
+class GeminiClient(BaseAIClient):
     """
-    A client for interacting with the Google Gemini API (google-genai).
+    A client for interacting with the Google Gemini API using the new google.genai package.
     Handles API calls and response processing.
     """
 
-    def __init__(self, api_key: str, model_name: str):
+    def __init__(self, api_key: str, model_name: str = "gemini-1.5-flash", **kwargs):
         """
-        Initialize the Gemini client with the provided API key and model name.
+        Initialize the Gemini client.
+
+        Args:
+            api_key: The Google Gemini API key
+            model_name: The name of the model to use (default: gemini-1.5-flash)
+            **kwargs: Additional keyword arguments
         """
-        try:
-            if not api_key:
-                raise ValueError("api_key is required")
+        super().__init__(api_key, **kwargs)
 
-            # NEW SDK: create a client (no genai.configure in google-genai)
-            self.client = genai.Client(api_key=api_key)
+        if not api_key:
+            raise ValueError("API key is required for Gemini")
 
-            # Respect the model_name passed in (fallback to a sensible default)
-            self.model_name = model_name or "gemini-2.5-flash-lite"
+        self.client = genai.Client(api_key=api_key)
+        self.model_name = model_name
 
-        except Exception as e:
-            print(f"Error initializing Gemini client: {str(e)}")
-            raise
-
-    def get_completion(
-            self,
-            prompt: str,
-            model: str = None,
-            return_usage: bool = False
-    ) -> Tuple[Optional[str], Optional[Dict]]:
+    def get_completion(self, prompt: str, **kwargs) -> Tuple[Optional[str], Optional[Dict[str, int]]]:
         """
         Get a completion from the Gemini API.
 
         Args:
             prompt: The input prompt to send to the model
-            model: Optional override model name (kept for compatibility)
-            return_usage: If True, returns (response_text, usage_dict)
+            **kwargs: Additional parameters for the API call
+                - model: Override the default model for this call
+                - temperature: Controls randomness (0.0 to 1.0)
+                - max_output_tokens: Maximum number of tokens to generate
+                - return_usage: If True, returns token usage information
 
         Returns:
-            (response_text, usage_dict_or_none)
+            A tuple of (response_text, usage_dict) where usage_dict contains
+            token usage information (prompt_tokens, completion_tokens, total_tokens)
         """
+        model_name = kwargs.get('model', self.model_name)
+        temperature = kwargs.get('temperature', 0.7)
+        max_output_tokens = kwargs.get('max_output_tokens', 2048)
+        return_usage = kwargs.get('return_usage', True)
+
         try:
-            if not prompt or not prompt.strip():
-                return None, None
-
-            model_to_use = model or self.model_name
-
             response = self.client.models.generate_content(
-                model=model_to_use,
-                contents=prompt
+                model=model_name,
+                contents=prompt,
+                config={
+                    'temperature': temperature,
+                    'max_output_tokens': max_output_tokens,
+                }
             )
 
-            text = getattr(response, "text", None)
+            text = response.text if hasattr(response, 'text') else None
 
             if not return_usage:
                 return text, None
 
-            # Usage fields can vary depending on API / plan.
-            # We'll try to extract something if present, otherwise return zeros.
-            usage_dict = {"model": model_to_use}
+            # Try to get usage information if available
+            usage = None
+            if hasattr(response, 'usage_metadata'):
+                usage_metadata = response.usage_metadata
+                usage = {
+                    'prompt_tokens': getattr(usage_metadata, 'prompt_token_count', 0),
+                    'completion_tokens': getattr(usage_metadata, 'candidates_token_count', 0),
+                    'total_tokens': getattr(usage_metadata, 'total_token_count', 0)
+                }
 
-            usage = getattr(response, "usage", None)
-            if usage:
-                usage_dict.update({
-                    "prompt_tokens": getattr(usage, "prompt_tokens", 0),
-                    "completion_tokens": getattr(usage, "completion_tokens", 0),
-                    "total_tokens": getattr(usage, "total_tokens", 0),
-                })
-            else:
-                usage_dict.update({
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                    "total_tokens": 0,
-                })
-
-            return text, usage_dict
+            return text, usage
 
         except Exception as e:
             print(f"Error getting completion from Gemini: {str(e)}")
             return None, None
+
+    @classmethod
+    def list_available_models(cls, api_key: str = None, **kwargs) -> None:
+        """
+        List all available Gemini models.
+
+        Args:
+            api_key: The Google Gemini API key
+            **kwargs: Additional parameters
+                - current_model: The currently selected model (will be highlighted)
+        """
+        try:
+            if not api_key:
+                print("API key not provided. Cannot list available models.")
+                return
+
+            client = genai.Client(api_key=api_key)
+            current_model = kwargs.get('current_model', 'gemini-1.5-flash')
+
+            # Get the list of available models
+            models = client.models.list()
+
+            print("\n=== Available Gemini Models ===")
+            for model in models:
+                # Check if model supports content generation
+                if hasattr(model, 'supported_generation_methods') and 'generateContent' in model.supported_generation_methods:
+                    prefix = "* " if model.name == current_model else "  "
+                    print(f"{prefix}{model.name} (supports: {', '.join(model.supported_generation_methods)})")
+                elif hasattr(model, 'name'):
+                    # Fallback if supported_generation_methods is not available
+                    prefix = "* " if model.name == current_model else "  "
+                    print(f"{prefix}{model.name}")
+            print("* = currently selected\n")
+
+        except Exception as e:
+            print(f"Error listing available models: {str(e)}")
 
 
 # Example usage
@@ -92,10 +123,6 @@ if __name__ == "__main__":
 
     load_dotenv()
     api_key = os.getenv("GOOGLE_GEMINI_API_KEY")
-
-    # Recommended defaults:
-    # - gemini-1.5-flash for fast + cost-effective chat
-    # - gemini-1.5-pro for higher reasoning quality
     model_name = os.getenv("DEFAULT_GEMINI_MODEL", "gemini-1.5-flash")
 
     if not api_key:
