@@ -6,7 +6,7 @@ This enforces the "locked" contract across all providers.
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import uuid
 import time
 from models.unified_response import UnifiedResponse, TokenUsage, NormalizedError
@@ -41,8 +41,9 @@ class BaseAIClient(ABC):
     @abstractmethod
     def get_completion(
         self,
-        prompt: str,
+        prompt: Optional[str] = None,
         *,
+        messages: Optional[list] = None,
         save_full: bool = False,
         **kwargs
     ) -> UnifiedResponse:
@@ -52,7 +53,9 @@ class BaseAIClient(ABC):
         THIS IS THE LOCKED CONTRACT. All providers MUST return UnifiedResponse.
 
         Args:
-            prompt: The input prompt to send to the model
+            prompt: (Legacy) Single string prompt - converted to [{"role": "user", "content": prompt}]
+            messages: (Multi-turn) List of message dicts with 'role' and 'content' keys.
+                     Format: [{"role": "system|user|assistant", "content": str}, ...]
             save_full: If True, include raw provider response in response.raw
             **kwargs: Additional parameters for the API call
 
@@ -60,6 +63,9 @@ class BaseAIClient(ABC):
             UnifiedResponse: Normalized response object
 
         IMPORTANT:
+        - If messages is provided, use it as the full conversation context
+        - If messages is None but prompt is provided, convert prompt to messages format
+        - If both are None, return UnifiedResponse with error
         - NEVER raise exceptions - catch all errors and return UnifiedResponse with error
         - Use helper methods: _generate_request_id(), _measure_latency(), _normalize_error()
         - Fill all required fields (text, provider, model, token_usage, etc.)
@@ -82,6 +88,41 @@ class BaseAIClient(ABC):
     # ============================================================
     # HELPER METHODS - Use these in provider implementations
     # ============================================================
+
+    def _normalize_input(
+        self,
+        prompt: Optional[str] = None,
+        messages: Optional[List[Dict[str, str]]] = None
+    ) -> List[Dict[str, str]]:
+        """
+        Normalize input to messages format.
+
+        Converts legacy prompt parameter to messages format for backward compatibility.
+
+        Args:
+            prompt: Single string prompt (legacy)
+            messages: List of message dicts (new multi-turn format)
+
+        Returns:
+            List of message dicts in standard format
+
+        Raises:
+            ValueError: If both prompt and messages are None
+        """
+        if messages is not None:
+            # Use provided messages
+            if not isinstance(messages, list):
+                raise ValueError("messages must be a list")
+            return messages
+
+        if prompt is not None:
+            # Convert prompt to messages format
+            if not isinstance(prompt, str):
+                raise ValueError("prompt must be a string")
+            return [{"role": "user", "content": prompt}]
+
+        # Neither provided
+        raise ValueError("Either 'prompt' or 'messages' must be provided")
 
     def _generate_request_id(self) -> str:
         """

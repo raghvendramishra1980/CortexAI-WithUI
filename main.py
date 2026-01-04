@@ -11,11 +11,12 @@ load_dotenv()
 # Import clients based on configuration
 MODEL_TYPE = os.getenv('MODEL_TYPE', 'openai').lower()
 
-# Import the base client, token tracker, cost calculator, and logger
+# Import the base client, token tracker, cost calculator, logger, and conversation manager
 from api.base_client import BaseAIClient
 from utils.token_tracker import TokenTracker
 from utils.cost_calculator import CostCalculator
 from utils.logger import get_logger
+from context.conversation_manager import ConversationManager
 
 logger = get_logger(__name__)
 
@@ -146,6 +147,7 @@ def main():
     # Initialize variables to None for proper cleanup in finally block
     token_tracker = None
     cost_calculator = None
+    conversation = None
 
     logger.info("Application starting", extra={"extra_fields": {"model_type": MODEL_TYPE}})
 
@@ -153,12 +155,20 @@ def main():
         # Initialize the appropriate client
         client, model_name = initialize_client(MODEL_TYPE)
 
-        # Initialize token tracker and cost calculator
+        # Initialize token tracker, cost calculator, and conversation manager
         token_tracker = TokenTracker(model_type=MODEL_TYPE, model_name=model_name)
         cost_calculator = CostCalculator(model_type=MODEL_TYPE, model_name=model_name)
+        conversation = ConversationManager()
+
+        logger.info(
+            "Initialized conversation manager",
+            extra={"extra_fields": {
+                "max_messages": conversation.max_messages
+            }}
+        )
 
         # Start the chat interface
-        print("\n=== AI Chat ===")
+        print("\n=== AI Chat (Multi-turn Context Enabled) ===")
         print("Type 'exit' to quit, 'stats' to see token usage, or 'help' for commands\n")
         
         while True:
@@ -168,11 +178,11 @@ def main():
                 # Handle commands
                 if not user_input:
                     continue
-                    
+
                 if user_input.lower() in ('exit', 'quit'):
                     print("\nGoodbye!")
                     break
-                    
+
                 if user_input.lower() == 'stats':
                     logger.debug("User requested session statistics")
                     print("\n=== Session Statistics ===")
@@ -180,24 +190,45 @@ def main():
                     print(f"\n{cost_calculator.format_summary()}")
                     print(f"\nLast updated: {token_tracker.get_summary()['timestamp']}\n")
                     continue
-                    
+
+                if user_input.lower() == '/reset':
+                    conversation.reset(keep_system_prompt=True)
+                    print("\n[Conversation history cleared]\n")
+                    logger.info("User reset conversation history")
+                    continue
+
+                if user_input.lower() == '/history':
+                    print(f"\n{conversation.get_conversation_summary(last_n=10)}\n")
+                    logger.debug("User requested conversation history")
+                    continue
+
                 if user_input.lower() == 'help':
                     print("\n=== Available Commands ===")
-                    print("help     - Show this help message")
-                    print("stats    - Show token usage statistics")
-                    print("exit/quit - Exit the program\n")
+                    print("help       - Show this help message")
+                    print("stats      - Show token usage statistics")
+                    print("/reset     - Clear conversation history")
+                    print("/history   - Show recent conversation")
+                    print("exit/quit  - Exit the program\n")
                     continue
                 
+                # Add user message to conversation
+                conversation.add_user(user_input)
+
                 # Show loading animation in a separate thread
                 stop_animation = threading.Event()
                 loading_thread = threading.Thread(target=show_loading_animation, args=(stop_animation,))
                 loading_thread.daemon = True
                 loading_thread.start()
-                
+
                 try:
-                    # Get completion - now returns UnifiedResponse
-                    logger.debug(f"User query length: {len(user_input)} characters")
-                    resp = client.get_completion(user_input)
+                    # Get completion with full conversation context
+                    logger.debug(
+                        f"User query length: {len(user_input)} characters",
+                        extra={"extra_fields": {
+                            "conversation_length": conversation.get_message_count()
+                        }}
+                    )
+                    resp = client.get_completion(messages=conversation.get_messages())
 
                     # Stop the loading animation
                     stop_animation.set()
@@ -205,6 +236,9 @@ def main():
 
                     # Handle error responses
                     if resp.is_error:
+                        # Remove the user message that caused the error
+                        conversation.pop_last_user()
+
                         print(f"\n[ERROR] {resp.error.code.upper()}: {resp.error.message}")
                         if resp.error.retryable:
                             print("(This error may be retryable)")
@@ -220,9 +254,12 @@ def main():
                         )
                         continue
 
-                    # Success - display response
+                    # Success - display response and add to conversation
                     if resp.text:
                         print(f"\nAI: {resp.text}")
+
+                        # Add assistant response to conversation
+                        conversation.add_assistant(resp.text)
 
                         # Update token tracker (using UnifiedResponse)
                         usage_dict = {

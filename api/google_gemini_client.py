@@ -1,6 +1,6 @@
 import os
 import time
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from google import genai
 from .base_client import BaseAIClient
 from models.unified_response import UnifiedResponse, TokenUsage
@@ -36,10 +36,57 @@ class GeminiClient(BaseAIClient):
         self.model_name = model_name
         self.cost_calculator = CostCalculator(model_type='gemini', model_name=model_name)
 
+    def _convert_messages_to_gemini_format(
+        self,
+        messages: List[Dict[str, str]]
+    ) -> tuple[Optional[str], List[Dict[str, Any]]]:
+        """
+        Convert standard messages format to Gemini's format.
+
+        Gemini expects:
+        - system_instruction (optional): system prompt
+        - contents: list of messages with role and parts
+
+        Role mapping:
+        - "system" -> extracted as system_instruction (only first one)
+        - "user" -> role="user"
+        - "assistant" -> role="model"
+
+        Args:
+            messages: List of message dicts with 'role' and 'content' keys
+
+        Returns:
+            Tuple of (system_instruction, gemini_contents)
+        """
+        system_instruction = None
+        gemini_contents = []
+
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+
+            if role == "system":
+                # Use first system message as system_instruction
+                if system_instruction is None:
+                    system_instruction = content
+                # Skip additional system messages or append as user message
+                continue
+
+            # Map roles: user->user, assistant->model
+            gemini_role = "model" if role == "assistant" else "user"
+
+            gemini_contents.append({
+                "role": gemini_role,
+                "parts": [{"text": content}]
+            })
+
+        return system_instruction, gemini_contents
+
     def get_completion(
         self,
-        prompt: str,
+        prompt: Optional[str] = None,
         *,
+        messages: Optional[list] = None,
         save_full: bool = False,
         **kwargs
     ) -> UnifiedResponse:
@@ -47,7 +94,8 @@ class GeminiClient(BaseAIClient):
         Get a completion from the Gemini API.
 
         Args:
-            prompt: The input prompt to send to the model
+            prompt: (Legacy) Single string prompt - converted to messages format
+            messages: (Multi-turn) List of message dicts with 'role' and 'content' keys
             save_full: If True, include raw provider response in response.raw
             **kwargs: Additional parameters:
                 - model: Override the default model for this call
@@ -67,13 +115,24 @@ class GeminiClient(BaseAIClient):
         max_output_tokens = kwargs.get('max_output_tokens', 2048)
 
         try:
+            # Normalize input to messages format
+            normalized_messages = self._normalize_input(prompt=prompt, messages=messages)
+
+            # Convert to Gemini format
+            system_instruction, gemini_contents = self._convert_messages_to_gemini_format(normalized_messages)
+
+            # Build config
+            config = {
+                'temperature': temperature,
+                'max_output_tokens': max_output_tokens,
+            }
+            if system_instruction:
+                config['system_instruction'] = system_instruction
+
             response = self.client.models.generate_content(
                 model=model_name,
-                contents=prompt,
-                config={
-                    'temperature': temperature,
-                    'max_output_tokens': max_output_tokens,
-                }
+                contents=gemini_contents,
+                config=config
             )
 
             latency_ms = self._measure_latency(start_time)

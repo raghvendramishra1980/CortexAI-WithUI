@@ -33,8 +33,9 @@ class OpenAIClient(BaseAIClient):
 
     def get_completion(
         self,
-        prompt: str,
+        prompt: Optional[str] = None,
         *,
+        messages: Optional[list] = None,
         save_full: bool = False,
         **kwargs
     ) -> UnifiedResponse:
@@ -42,7 +43,8 @@ class OpenAIClient(BaseAIClient):
         Get a completion from the OpenAI API.
 
         Args:
-            prompt: The input prompt to send to the model
+            prompt: (Legacy) Single string prompt - converted to messages format
+            messages: (Multi-turn) List of message dicts with 'role' and 'content' keys
             save_full: If True, include raw provider response in response.raw
             **kwargs: Additional parameters:
                 - model: Override the default model for this call
@@ -62,9 +64,12 @@ class OpenAIClient(BaseAIClient):
         max_tokens = kwargs.get('max_tokens', 500)
 
         try:
+            # Normalize input to messages format
+            normalized_messages = self._normalize_input(prompt=prompt, messages=messages)
+
             response = self.client.chat.completions.create(
                 model=model,
-                messages=[{"role": "user", "content": prompt}],
+                messages=normalized_messages,
                 temperature=temperature,
                 max_tokens=max_tokens
             )
