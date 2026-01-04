@@ -266,7 +266,7 @@ def main():
                 extra={"extra_fields": {
                     "total_requests": summary.get('requests', 0),
                     "total_tokens": summary.get('total_tokens', 0),
-                    "total_cost": cost_calculator.cumulative_cost if cost_calculator else 0
+                    "total_cost": cost_calculator.total_cost if cost_calculator else 0
                 }}
             )
             print("\n=== Final Session Statistics ===")
