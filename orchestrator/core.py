@@ -1,18 +1,18 @@
 """
 CortexOrchestrator - Core business logic layer for CortexAI.
 
-Separates orchestration logic from CLI/API interfaces to enable:
-- CLI integration (main.py)
-- FastAPI REST endpoints (future)
-- Python SDK (future)
-- gRPC/WebSocket services (future)
+Key guarantees:
+- CLI/API layers stay thin (no provider imports there)
+- No exceptions bubble up from ask() / compare()
+- TokenTracker updates happen here (business layer)
 """
 
 import os
+import uuid
 from typing import Optional, List, Dict, Any
+
 from api.base_client import BaseAIClient
-from models.unified_response import UnifiedResponse
-from models.multi_unified_response import MultiUnifiedResponse
+from models.unified_response import UnifiedResponse, MultiUnifiedResponse, NormalizedError, TokenUsage
 from models.user_context import UserContext
 from utils.token_tracker import TokenTracker
 from utils.cost_calculator import CostCalculator
@@ -23,165 +23,124 @@ logger = get_logger(__name__)
 
 
 class CortexOrchestrator:
-    """
-    Stateless orchestrator for AI model interactions.
-
-    Coordinates client initialization, request routing, token tracking,
-    and cost calculation without maintaining session state. All session
-    data is passed via UserContext for true statelessness.
-    """
-
     def __init__(self):
-        """Initialize the orchestrator."""
         self._multi_orchestrator = MultiModelOrchestrator()
         self._client_cache: Dict[str, BaseAIClient] = {}
 
+    # ---------- helpers ----------
+    def _error_response(
+        self,
+        *,
+        provider: str,
+        model: str,
+        message: str,
+        code: str = "unknown",
+        retryable: bool = False,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> UnifiedResponse:
+        return UnifiedResponse(
+            request_id=str(uuid.uuid4()),
+            text="",
+            provider=provider,
+            model=model,
+            latency_ms=0,
+            token_usage=TokenUsage(0, 0, 0),
+            estimated_cost=0.0,
+            finish_reason="error",
+            error=NormalizedError(
+                code=code,
+                message=message,
+                provider=provider,
+                retryable=retryable,
+                details=details or {},
+            ),
+        )
+
     def _get_client(self, model_type: str, model_name: Optional[str] = None) -> BaseAIClient:
-        """
-        Get or create a client for the specified model type.
-
-        Args:
-            model_type: Provider type ('openai', 'gemini', 'deepseek', 'grok')
-            model_name: Optional specific model name
-
-        Returns:
-            Initialized BaseAIClient instance
-
-        Raises:
-            ValueError: If model_type is unsupported or API key is missing
-        """
-        # Create cache key
+        model_type = (model_type or "").lower().strip()
         cache_key = f"{model_type}:{model_name or 'default'}"
-
-        # Return cached client if available
         if cache_key in self._client_cache:
             return self._client_cache[cache_key]
 
-        # Initialize new client
-        model_type = model_type.lower()
-
-        if model_type == 'openai':
+        if model_type == "openai":
             from api.openai_client import OpenAIClient
-            api_key = os.getenv('OPENAI_API_KEY')
+            api_key = os.getenv("OPENAI_API_KEY")
             if not api_key:
                 raise ValueError("OPENAI_API_KEY not found in environment variables")
-            model_name = model_name or os.getenv('DEFAULT_OPENAI_MODEL', 'gpt-3.5-turbo')
+            model_name = model_name or os.getenv("DEFAULT_OPENAI_MODEL", "gpt-3.5-turbo")
             client = OpenAIClient(api_key=api_key, model_name=model_name)
 
-        elif model_type == 'gemini':
+        elif model_type == "gemini":
             from api.google_gemini_client import GeminiClient
-            api_key = os.getenv('GOOGLE_GEMINI_API_KEY')
+            api_key = os.getenv("GOOGLE_GEMINI_API_KEY")
             if not api_key:
                 raise ValueError("GOOGLE_GEMINI_API_KEY not found in environment variables")
-            model_name = model_name or os.getenv('DEFAULT_GEMINI_MODEL', 'gemini-2.5-flash-lite')
+            model_name = model_name or os.getenv("DEFAULT_GEMINI_MODEL", "gemini-2.5-flash-lite")
             client = GeminiClient(api_key=api_key, model_name=model_name)
 
-        elif model_type == 'deepseek':
+        elif model_type == "deepseek":
             from api.deepseek_client import DeepSeekClient
-            api_key = os.getenv('DEEPSEEK_API_KEY')
+            api_key = os.getenv("DEEPSEEK_API_KEY")
             if not api_key:
                 raise ValueError("DEEPSEEK_API_KEY not found in environment variables")
-            model_name = model_name or os.getenv('DEFAULT_DEEPSEEK_MODEL', 'deepseek-chat')
+            model_name = model_name or os.getenv("DEFAULT_DEEPSEEK_MODEL", "deepseek-chat")
             client = DeepSeekClient(api_key=api_key, model_name=model_name)
 
-        elif model_type == 'grok':
+        elif model_type == "grok":
             from api.grok_client import GrokClient
-            api_key = os.getenv('GROK_API_KEY')
+            api_key = os.getenv("GROK_API_KEY")
             if not api_key:
                 raise ValueError("GROK_API_KEY not found in environment variables")
-            model_name = model_name or os.getenv('DEFAULT_GROK_MODEL', 'grok-4-latest')
+            model_name = model_name or os.getenv("DEFAULT_GROK_MODEL", "grok-4-latest")
             client = GrokClient(api_key=api_key, model_name=model_name)
 
         else:
-            raise ValueError(
-                f"Unsupported MODEL_TYPE: {model_type}. "
-                f"Must be 'openai', 'gemini', 'deepseek', or 'grok'"
-            )
+            raise ValueError(f"Unsupported MODEL_TYPE: {model_type}")
 
-        logger.info(
-            f"Initialized {model_type} client",
-            extra={"extra_fields": {"model": model_name, "model_type": model_type}}
-        )
-
-        # Cache and return
         self._client_cache[cache_key] = client
+        logger.info(
+            "Initialized client",
+            extra={"extra_fields": {"provider": model_type, "model": model_name}},
+        )
         return client
 
+    def _build_messages(self, prompt: str, context: Optional[UserContext]) -> List[Dict[str, str]]:
+        if context and context.conversation_history:
+            msgs = context.get_messages()
+            msgs.append({"role": "user", "content": prompt})
+            return msgs
+        return [{"role": "user", "content": prompt}]
+
+    # ---------- public API ----------
     def ask(
         self,
         prompt: str,
         model_type: str,
         context: Optional[UserContext] = None,
         model_name: Optional[str] = None,
-        **kwargs
+        token_tracker: Optional[TokenTracker] = None,
+        **kwargs,
     ) -> UnifiedResponse:
-        """
-        Execute a single-model request.
+        try:
+            client = self._get_client(model_type, model_name)
+            messages = self._build_messages(prompt, context)
 
-        This is the primary method for standard AI interactions. It:
-        1. Initializes the appropriate client
-        2. Calls get_completion() with conversation context
-        3. Returns UnifiedResponse with token/cost data
+            resp = client.get_completion(messages=messages, **kwargs)
 
-        Args:
-            prompt: User prompt/query
-            model_type: Provider type ('openai', 'gemini', 'deepseek', 'grok')
-            context: Optional UserContext with conversation history
-            model_name: Optional specific model name
-            **kwargs: Additional parameters passed to get_completion()
+            # Update token tracker here (business layer)
+            if token_tracker:
+                token_tracker.update(resp)
 
-        Returns:
-            UnifiedResponse with result, tokens, cost, and metadata
+            return resp
 
-        Example:
-            >>> orchestrator = CortexOrchestrator()
-            >>> context = UserContext()
-            >>> response = orchestrator.ask(
-            ...     prompt="What is Python?",
-            ...     model_type="openai",
-            ...     context=context
-            ... )
-            >>> print(response.text)
-        """
-        logger.debug(
-            f"Processing ask request",
-            extra={"extra_fields": {
-                "model_type": model_type,
-                "model_name": model_name,
-                "prompt_length": len(prompt),
-                "has_context": context is not None
-            }}
-        )
-
-        # Get client
-        client = self._get_client(model_type, model_name)
-
-        # Build messages from context
-        if context and context.conversation_history:
-            # Use full conversation history
-            messages = context.get_messages()
-            # Add current prompt
-            messages.append({"role": "user", "content": prompt})
-        else:
-            # No context - single message
-            messages = [{"role": "user", "content": prompt}]
-
-        # Call client
-        response = client.get_completion(messages=messages, **kwargs)
-
-        logger.info(
-            "Ask request completed",
-            extra={"extra_fields": {
-                "request_id": response.request_id,
-                "provider": response.provider,
-                "model": response.model,
-                "is_error": response.is_error,
-                "tokens": response.token_usage.total_tokens,
-                "cost": response.estimated_cost
-            }}
-        )
-
-        return response
+        except Exception as e:
+            logger.exception("ask() failed")
+            return self._error_response(
+                provider=model_type,
+                model=model_name or "default",
+                message=str(e),
+                code="unknown",
+            )
 
     def compare(
         self,
@@ -189,153 +148,99 @@ class CortexOrchestrator:
         models_list: List[Dict[str, str]],
         context: Optional[UserContext] = None,
         timeout_s: Optional[float] = None,
-        **kwargs
+        token_tracker: Optional[TokenTracker] = None,
+        **kwargs,
     ) -> MultiUnifiedResponse:
-        """
-        Execute a multi-model comparison request.
+        request_group_id = str(uuid.uuid4())
+        responses: List[UnifiedResponse] = []
 
-        Sends the same prompt to multiple models in parallel and returns
-        aggregated results. Useful for:
-        - A/B testing models
-        - Comparing response quality
-        - Cost/latency benchmarking
+        try:
+            messages = self._build_messages(prompt, context)
 
-        Args:
-            prompt: User prompt/query
-            models_list: List of model configs, each with 'provider' and 'model' keys
-                        Example: [
-                            {"provider": "openai", "model": "gpt-4"},
-                            {"provider": "gemini", "model": "gemini-pro"}
-                        ]
-            context: Optional UserContext with conversation history
-            timeout_s: Per-model timeout in seconds (default: 60)
-            **kwargs: Additional parameters passed to get_completion()
+            clients: List[BaseAIClient] = []
+            client_meta: List[Dict[str, str]] = []
 
-        Returns:
-            MultiUnifiedResponse with responses from all models
-
-        Example:
-            >>> orchestrator = CortexOrchestrator()
-            >>> models = [
-            ...     {"provider": "openai", "model": "gpt-3.5-turbo"},
-            ...     {"provider": "gemini", "model": "gemini-pro"}
-            ... ]
-            >>> result = orchestrator.compare(
-            ...     prompt="What is Python?",
-            ...     models_list=models
-            ... )
-            >>> for resp in result.responses:
-            ...     print(f"{resp.provider}/{resp.model}: {resp.text[:100]}")
-        """
-        logger.debug(
-            f"Processing compare request",
-            extra={"extra_fields": {
-                "model_count": len(models_list),
-                "prompt_length": len(prompt),
-                "has_context": context is not None
-            }}
-        )
-
-        # Initialize clients for all models
-        clients = []
-        for model_config in models_list:
-            try:
-                provider = model_config.get("provider")
-                model = model_config.get("model")
+            for cfg in models_list:
+                provider = (cfg.get("provider") or "").lower().strip()
+                model = (cfg.get("model") or "").strip()
 
                 if not provider or not model:
-                    logger.warning(
-                        "Invalid model config - missing provider or model",
-                        extra={"extra_fields": {"config": model_config}}
+                    responses.append(
+                        self._error_response(
+                            provider=provider or "unknown",
+                            model=model or "unknown",
+                            message=f"Invalid model config: {cfg}",
+                            code="bad_request",
+                        )
                     )
                     continue
 
-                client = self._get_client(provider, model)
-                clients.append(client)
+                try:
+                    c = self._get_client(provider, model)
+                    clients.append(c)
+                    client_meta.append({"provider": provider, "model": model})
+                except Exception as init_err:
+                    responses.append(
+                        self._error_response(
+                            provider=provider,
+                            model=model,
+                            message=str(init_err),
+                            code="auth" if "API_KEY" in str(init_err) else "unknown",
+                        )
+                    )
 
-            except Exception as e:
-                logger.error(
-                    f"Failed to initialize client for {model_config}: {e}",
-                    extra={"extra_fields": {
-                        "provider": model_config.get("provider"),
-                        "model": model_config.get("model"),
-                        "error": str(e)
-                    }}
+            # If we have no valid clients, still return a MultiUnifiedResponse (no exceptions)
+            if not clients:
+                if token_tracker:
+                    for r in responses:
+                        token_tracker.update(r)
+                return MultiUnifiedResponse.from_responses(request_group_id, prompt, responses)
+
+            # Execute comparisons (parallel inside MultiModelOrchestrator)
+            result = self._multi_orchestrator.get_comparisons_sync(
+                prompt=prompt,
+                clients=clients,
+                timeout_s=timeout_s,
+                messages=messages,
+                **kwargs,
+            )
+
+            # Merge init-time failures + runtime results
+            responses.extend(result.responses)
+
+            if token_tracker:
+                for r in responses:
+                    token_tracker.update(r)
+
+            return MultiUnifiedResponse.from_responses(request_group_id, prompt, responses)
+
+        except Exception as e:
+            logger.exception("compare() failed")
+            responses.append(
+                self._error_response(
+                    provider="orchestrator",
+                    model="compare",
+                    message=str(e),
+                    code="unknown",
                 )
+            )
+            if token_tracker:
+                for r in responses:
+                    token_tracker.update(r)
+            return MultiUnifiedResponse.from_responses(request_group_id, prompt, responses)
 
-        if not clients:
-            raise ValueError("No valid clients could be initialized from models_list")
-
-        # Build messages from context
-        if context and context.conversation_history:
-            messages = context.get_messages()
-            messages.append({"role": "user", "content": prompt})
-        else:
-            messages = [{"role": "user", "content": prompt}]
-
-        # Use MultiModelOrchestrator for parallel execution
-        result = self._multi_orchestrator.get_comparisons_sync(
-            prompt=prompt,
-            clients=clients,
-            timeout_s=timeout_s,
-            messages=messages,
-            **kwargs
-        )
-
-        logger.info(
-            "Compare request completed",
-            extra={"extra_fields": {
-                "request_group_id": result.request_group_id,
-                "success_count": result.success_count,
-                "error_count": result.error_count,
-                "total_tokens": result.total_tokens,
-                "total_cost": result.total_cost
-            }}
-        )
-
-        return result
-
-    def create_token_tracker(
-        self,
-        model_type: str,
-        model_name: Optional[str] = None
-    ) -> TokenTracker:
-        """
-        Create a TokenTracker for session-level tracking.
-
-        Args:
-            model_type: Provider type
-            model_name: Optional model name
-
-        Returns:
-            Initialized TokenTracker instance
-        """
+    # --- keep these helpers (your CLI uses them) ---
+    def create_token_tracker(self, model_type: str, model_name: Optional[str] = None) -> TokenTracker:
         return TokenTracker(model_type=model_type, model_name=model_name)
 
-    def create_cost_calculator(
-        self,
-        model_type: str,
-        model_name: Optional[str] = None
-    ) -> CostCalculator:
-        """
-        Create a CostCalculator for session-level cost tracking.
-
-        Args:
-            model_type: Provider type
-            model_name: Optional model name
-
-        Returns:
-            Initialized CostCalculator instance
-        """
+    def create_cost_calculator(self, model_type: str, model_name: Optional[str] = None) -> CostCalculator:
         if not model_name:
-            # Get default model name for the provider
-            if model_type.lower() == 'openai':
-                model_name = os.getenv('DEFAULT_OPENAI_MODEL', 'gpt-3.5-turbo')
-            elif model_type.lower() == 'gemini':
-                model_name = os.getenv('DEFAULT_GEMINI_MODEL', 'gemini-2.5-flash-lite')
-            elif model_type.lower() == 'deepseek':
-                model_name = os.getenv('DEFAULT_DEEPSEEK_MODEL', 'deepseek-chat')
-            elif model_type.lower() == 'grok':
-                model_name = os.getenv('DEFAULT_GROK_MODEL', 'grok-4-latest')
-
+            if model_type.lower() == "openai":
+                model_name = os.getenv("DEFAULT_OPENAI_MODEL", "gpt-3.5-turbo")
+            elif model_type.lower() == "gemini":
+                model_name = os.getenv("DEFAULT_GEMINI_MODEL", "gemini-2.5-flash-lite")
+            elif model_type.lower() == "deepseek":
+                model_name = os.getenv("DEFAULT_DEEPSEEK_MODEL", "deepseek-chat")
+            elif model_type.lower() == "grok":
+                model_name = os.getenv("DEFAULT_GROK_MODEL", "grok-4-latest")
         return CostCalculator(model_type=model_type, model_name=model_name)

@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, Literal
 from datetime import datetime
-
+from typing import List
 
 FinishReason = Optional[Literal["stop", "length", "tool", "content_filter", "error"]]
 
@@ -42,11 +42,11 @@ class UnifiedResponse:
     estimated_cost: float
 
     # NEW: routing/debugging/caching guardrails
-    mode: Optional[str] = None                 # ask/compare/eval
-    language: Optional[str] = "en"             # requested/expected output language
-    input_hash: Optional[str] = None           # prompt hash for cache + dedupe
-    attempt: int = 1                           # fallback attempt counter
-    fallback_from: Optional[str] = None        # "openai:gpt-4.1" etc.
+    mode: Optional[str] = None  # ask/compare/eval
+    language: Optional[str] = "en"  # requested/expected output language
+    input_hash: Optional[str] = None  # prompt hash for cache + dedupe
+    attempt: int = 1  # fallback attempt counter
+    fallback_from: Optional[str] = None  # "openai:gpt-4.1" etc.
 
     finish_reason: FinishReason = None
     error: Optional[NormalizedError] = None
@@ -105,3 +105,35 @@ class UnifiedResponse:
             } if self.error else None,
             "timestamp": self.timestamp,
         }
+
+
+@dataclass(frozen=True)
+class MultiUnifiedResponse:
+    request_group_id: str
+    prompt: str
+    responses: List[UnifiedResponse]
+
+    success_count: int
+    error_count: int
+    total_tokens: int
+    total_cost: float
+
+    timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
+
+    @classmethod
+    def from_responses(cls, request_group_id: str, prompt: str,
+                       responses: List[UnifiedResponse]) -> "MultiUnifiedResponse":
+        success_count = sum(1 for r in responses if r and r.is_success)
+        error_count = len(responses) - success_count
+        total_tokens = sum((r.token_usage.total_tokens if r and r.token_usage else 0) for r in responses)
+        total_cost = sum((r.estimated_cost if r else 0.0) for r in responses)
+
+        return cls(
+            request_group_id=request_group_id,
+            prompt=prompt,
+            responses=responses,
+            success_count=success_count,
+            error_count=error_count,
+            total_tokens=total_tokens,
+            total_cost=total_cost,
+        )
