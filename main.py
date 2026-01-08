@@ -213,6 +213,8 @@ def main():
     cost_calculator = None
     conversation = None
     compare_clients = None
+    session_total_cost = 0.0  # Track session cost in Compare Mode
+    session_total_tokens = 0  # Track session tokens in Compare Mode
 
     logger.info(
         "Application starting",
@@ -359,20 +361,22 @@ def main():
                                     'total_tokens': resp.token_usage.total_tokens
                                 }
                                 token_tracker.update(usage_dict)
-                                cost_calculator.update_cumulative_cost(
-                                    resp.token_usage.prompt_tokens,
-                                    resp.token_usage.completion_tokens
-                                )
+                                # Skip cost_calculator in Compare Mode - each response has correct provider cost
 
                         if first_successful_response:
                             conversation.add_assistant(first_successful_response)
+
+                        # Accumulate session totals from compare responses
+                        session_total_cost += multi_resp.total_cost
+                        session_total_tokens += multi_resp.total_tokens
 
                         print("=== Summary ===")
                         print(f"Successful: {multi_resp.success_count}/{len(multi_resp.responses)}")
                         print(f"Failed: {multi_resp.error_count}/{len(multi_resp.responses)}")
                         print(f"Total Tokens: {multi_resp.total_tokens}")
                         print(f"Total Cost: ${multi_resp.total_cost:.6f}")
-                        print(f"Session Total Cost: ${cost_calculator.total_cost:.6f}\n")
+                        print(f"Session Total Cost: ${session_total_cost:.6f}")
+                        print(f"Session Total Tokens: {session_total_tokens}\n")
 
                         logger.info(
                             "Compare mode completed",
