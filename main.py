@@ -3,188 +3,38 @@ import threading
 import time
 import sys
 from dotenv import load_dotenv
-from typing import Optional, Dict, Any, Type
 
 # Load environment variables first
 load_dotenv()
 
-# Import clients based on configuration
+# Import configuration
 MODEL_TYPE = os.getenv('MODEL_TYPE', 'openai').lower()
 COMPARE_MODE = os.getenv('COMPARE_MODE', 'false').lower() == 'true'
 
-# Import the base client, token tracker, cost calculator, logger, and conversation manager
-from api.base_client import BaseAIClient
+# Import orchestrator and utilities
+from orchestrator.core import CortexOrchestrator
+from models.user_context import UserContext
 from utils.token_tracker import TokenTracker
 from utils.cost_calculator import CostCalculator
 from utils.logger import get_logger
 from context.conversation_manager import ConversationManager
 from config.config import COMPARE_TARGETS
-from orchestrator.multi_orchestrator import MultiModelOrchestrator
 
 logger = get_logger(__name__)
 
-def initialize_client(model_type: str) -> tuple[BaseAIClient, str]:
+def _convert_to_user_context(conversation: ConversationManager) -> UserContext:
     """
-    Initialize the appropriate AI client based on the model type.
+    Convert ConversationManager to UserContext for orchestrator.
 
     Args:
-        model_type: The type of model to initialize ('openai', 'gemini', 'deepseek', or 'grok')
+        conversation: ConversationManager instance
 
     Returns:
-        A tuple containing:
-            - An instance of the appropriate AI client
-            - The model name being used
-
-    Raises:
-        ValueError: If the model type is unsupported or required environment variables are missing
+        UserContext with conversation history
     """
-    model_type = model_type.lower()
-
-    if model_type == 'openai':
-        from api.openai_client import OpenAIClient
-
-        api_key = os.getenv('OPENAI_API_KEY')
-        if not api_key:
-            logger.error("OPENAI_API_KEY not found in environment variables")
-            raise ValueError("OPENAI_API_KEY not found in environment variables")
-
-        model_name = os.getenv('DEFAULT_OPENAI_MODEL', 'gpt-3.5-turbo')
-        client = OpenAIClient(api_key=api_key, model_name=model_name)
-        logger.info(
-            f"Initialized OpenAI client",
-            extra={"extra_fields": {"model": model_name, "model_type": "openai"}}
-        )
-        print(f"Initialized OpenAI client with model: {model_name}")
-
-    elif model_type == 'gemini':
-        from api.google_gemini_client import GeminiClient
-
-        api_key = os.getenv('GOOGLE_GEMINI_API_KEY')
-        if not api_key:
-            logger.error("GOOGLE_GEMINI_API_KEY not found in environment variables")
-            raise ValueError("GOOGLE_GEMINI_API_KEY not found in environment variables")
-
-        model_name = os.getenv('DEFAULT_GEMINI_MODEL', 'gemini-2.5-flash-lite')
-
-        # List available models (one-time operation before initializing main client)
-        GeminiClient.list_available_models(api_key=api_key, current_model=model_name)
-
-        # Initialize the main client for chat functionality
-        client = GeminiClient(api_key=api_key, model_name=model_name)
-        logger.info(
-            f"Initialized Gemini client",
-            extra={"extra_fields": {"model": model_name, "model_type": "gemini"}}
-        )
-        print(f"\nInitialized Gemini client with model: {model_name}")
-
-    elif model_type == 'deepseek':
-        from api.deepseek_client import DeepSeekClient
-
-        api_key = os.getenv('DEEPSEEK_API_KEY')
-        if not api_key:
-            logger.error("DEEPSEEK_API_KEY not found in environment variables")
-            raise ValueError("DEEPSEEK_API_KEY not found in environment variables")
-
-        model_name = os.getenv('DEFAULT_DEEPSEEK_MODEL', 'deepseek-chat')
-
-        # List available models (one-time operation before initializing main client)
-        DeepSeekClient.list_available_models(api_key=api_key, current_model=model_name)
-
-        # Initialize the main client for chat functionality
-        client = DeepSeekClient(api_key=api_key, model_name=model_name)
-        logger.info(
-            f"Initialized DeepSeek client",
-            extra={"extra_fields": {"model": model_name, "model_type": "deepseek"}}
-        )
-        print(f"\nInitialized DeepSeek client with model: {model_name}")
-
-    elif model_type == 'grok':
-        from api.grok_client import GrokClient
-
-        api_key = os.getenv('GROK_API_KEY')
-        if not api_key:
-            logger.error("GROK_API_KEY not found in environment variables")
-            raise ValueError("GROK_API_KEY not found in environment variables")
-
-        model_name = os.getenv('DEFAULT_GROK_MODEL', 'grok-4-latest')
-
-        # List available models (one-time operation before initializing main client)
-        GrokClient.list_available_models(api_key=api_key, current_model=model_name)
-
-        # Initialize the main client for chat functionality
-        client = GrokClient(api_key=api_key, model_name=model_name)
-        logger.info(
-            f"Initialized Grok client",
-            extra={"extra_fields": {"model": model_name, "model_type": "grok"}}
-        )
-        print(f"\nInitialized Grok client with model: {model_name}")
-
-    else:
-        logger.error(f"Unsupported MODEL_TYPE: {model_type}")
-        raise ValueError(f"Unsupported MODEL_TYPE: {model_type}. Must be 'openai', 'gemini', 'deepseek', or 'grok'")
-
-    return client, model_name
-
-
-def initialize_compare_clients():
-    """
-    Initialize clients for compare mode based on COMPARE_TARGETS configuration.
-
-    Returns:
-        List of initialized BaseAIClient instances, or empty list if initialization fails
-    """
-    from api.openai_client import OpenAIClient
-    from api.google_gemini_client import GeminiClient
-    from api.deepseek_client import DeepSeekClient
-    from api.grok_client import GrokClient
-
-    clients = []
-
-    for target in COMPARE_TARGETS:
-        provider = target["provider"].lower()
-        model = target["model"]
-
-        try:
-            if provider == "openai":
-                api_key = os.getenv('OPENAI_API_KEY')
-                if api_key:
-                    client = OpenAIClient(api_key=api_key, model_name=model)
-                    clients.append(client)
-                else:
-                    logger.warning(f"Skipping OpenAI ({model}): OPENAI_API_KEY not set")
-
-            elif provider == "gemini":
-                api_key = os.getenv('GOOGLE_GEMINI_API_KEY')
-                if api_key:
-                    client = GeminiClient(api_key=api_key, model_name=model)
-                    clients.append(client)
-                else:
-                    logger.warning(f"Skipping Gemini ({model}): GOOGLE_GEMINI_API_KEY not set")
-
-            elif provider == "deepseek":
-                api_key = os.getenv('DEEPSEEK_API_KEY')
-                if api_key:
-                    client = DeepSeekClient(api_key=api_key, model_name=model)
-                    clients.append(client)
-                else:
-                    logger.warning(f"Skipping DeepSeek ({model}): DEEPSEEK_API_KEY not set")
-
-            elif provider == "grok":
-                api_key = os.getenv('GROK_API_KEY')
-                if api_key:
-                    client = GrokClient(api_key=api_key, model_name=model)
-                    clients.append(client)
-                else:
-                    logger.warning(f"Skipping Grok ({model}): GROK_API_KEY not set")
-
-            else:
-                logger.warning(f"Unknown provider in COMPARE_TARGETS: {provider}")
-
-        except Exception as e:
-            logger.error(f"Failed to initialize {provider}/{model}: {e}")
-
-    logger.info(f"Initialized {len(clients)} clients for compare mode")
-    return clients
+    return UserContext(
+        conversation_history=conversation.get_messages()
+    )
 
 
 def show_loading_animation(stop_event: threading.Event) -> None:
@@ -208,13 +58,16 @@ def show_loading_animation(stop_event: threading.Event) -> None:
 
 
 def main():
-    # Initialize variables to None for proper cleanup in finally block
+    """
+    CLI entry point - thin layer that handles user I/O.
+    All business logic is delegated to CortexOrchestrator.
+    """
+    # Initialize CLI-level state tracking
     token_tracker = None
     cost_calculator = None
     conversation = None
-    compare_clients = None
-    session_total_cost = 0.0  # Track session cost in Compare Mode
-    session_total_tokens = 0  # Track session tokens in Compare Mode
+    session_total_cost = 0.0
+    session_total_tokens = 0
 
     logger.info(
         "Application starting",
@@ -222,40 +75,32 @@ def main():
     )
 
     try:
-        # Initialize clients based on mode
-        if COMPARE_MODE:
-            # In compare mode, initialize multiple clients
-            compare_clients = initialize_compare_clients()
-            if not compare_clients:
-                print("ERROR: COMPARE_MODE=true but no API keys configured.")
-                print("Please configure at least one API key in .env file.\n")
-                return
+        # Initialize orchestrator (stateless)
+        orchestrator = CortexOrchestrator()
 
-            # Still initialize single client for reference (using MODEL_TYPE)
-            client, model_name = initialize_client(MODEL_TYPE)
-            print(f"\n=== Compare Mode Active ===")
-            print(f"Queries will be sent to {len(compare_clients)} models simultaneously")
-        else:
-            # Single mode - initialize only the selected client
-            client, model_name = initialize_client(MODEL_TYPE)
-
-        # Initialize token tracker, cost calculator, and conversation manager
-        token_tracker = TokenTracker(model_type=MODEL_TYPE, model_name=model_name)
-        cost_calculator = CostCalculator(model_type=MODEL_TYPE, model_name=model_name)
+        # Initialize CLI session tracking
+        token_tracker = orchestrator.create_token_tracker(MODEL_TYPE)
+        cost_calculator = orchestrator.create_cost_calculator(MODEL_TYPE)
         conversation = ConversationManager()
 
+        # Validate configuration
+        if COMPARE_MODE and not COMPARE_TARGETS:
+            print("ERROR: COMPARE_MODE=true but no COMPARE_TARGETS configured in config.py")
+            print("Please configure COMPARE_TARGETS or set COMPARE_MODE=false\n")
+            return
+
         logger.info(
-            "Initialized conversation manager",
+            "Initialized CLI session",
             extra={"extra_fields": {
                 "max_messages": conversation.max_messages,
                 "compare_mode": COMPARE_MODE
             }}
         )
 
-        # Start the chat interface with appropriate header
-        mode_text = "Compare Mode" if COMPARE_MODE else "Single Model"
-        print(f"\n=== AI Chat ({mode_text}, Multi-turn Context Enabled) ===")
-        print("Type 'exit' to quit, 'stats' to see token usage, or 'help' for commands\n")
+        # Display welcome banner
+        mode_text = "Compare Mode" if COMPARE_MODE else f"Single Model ({MODEL_TYPE.upper()})"
+        print(f"\n=== CortexAI CLI ({mode_text}) ===")
+        print("Type 'exit' to quit, 'stats' for session stats, 'help' for commands\n")
 
         while True:
             try:
@@ -314,14 +159,17 @@ def main():
                 loading_thread.start()
 
                 try:
+                    # Convert conversation to UserContext for orchestrator
+                    context = _convert_to_user_context(conversation)
+
                     # Route based on COMPARE_MODE
                     if COMPARE_MODE:
                         # ===== COMPARE MODE =====
-                        orchestrator = MultiModelOrchestrator()
-                        multi_resp = orchestrator.get_comparisons_sync(
+                        # Use orchestrator.compare()
+                        multi_resp = orchestrator.compare(
                             prompt=user_input,
-                            clients=compare_clients,
-                            messages=conversation.get_messages()
+                            models_list=COMPARE_TARGETS,
+                            context=context
                         )
 
                         stop_animation.set()
@@ -355,18 +203,13 @@ def main():
                                 text_preview = resp.text if len(resp.text) <= 200 else resp.text[:200] + "..."
                                 print(f"    Response: {text_preview}\n")
 
-                                usage_dict = {
-                                    'prompt_tokens': resp.token_usage.prompt_tokens,
-                                    'completion_tokens': resp.token_usage.completion_tokens,
-                                    'total_tokens': resp.token_usage.total_tokens
-                                }
-                                token_tracker.update(usage_dict)
-                                # Skip cost_calculator in Compare Mode - each response has correct provider cost
+                                # Update session tracking
+                                token_tracker.update(resp)
 
                         if first_successful_response:
                             conversation.add_assistant(first_successful_response)
 
-                        # Accumulate session totals from compare responses
+                        # Accumulate session totals
                         session_total_cost += multi_resp.total_cost
                         session_total_tokens += multi_resp.total_tokens
 
@@ -392,22 +235,18 @@ def main():
 
                     else:
                         # ===== SINGLE MODE =====
-                        # Get completion with full conversation context
-                        logger.debug(
-                            f"User query length: {len(user_input)} characters",
-                            extra={"extra_fields": {
-                                "conversation_length": conversation.get_message_count()
-                            }}
+                        # Use orchestrator.ask()
+                        resp = orchestrator.ask(
+                            prompt=user_input,
+                            model_type=MODEL_TYPE,
+                            context=context
                         )
-                        resp = client.get_completion(messages=conversation.get_messages())
 
-                        # Stop the loading animation
                         stop_animation.set()
                         loading_thread.join()
 
                         # Handle error responses
                         if resp.is_error:
-                            # Remove the user message that caused the error
                             conversation.pop_last_user()
 
                             print(f"\n[ERROR] {resp.error.code.upper()}: {resp.error.message}")
@@ -425,22 +264,15 @@ def main():
                             )
                             continue
 
-                        # Success - display response and add to conversation
+                        # Success - display response
                         if resp.text:
                             print(f"\nAI: {resp.text}")
 
-                            # Add assistant response to conversation
+                            # Add to conversation
                             conversation.add_assistant(resp.text)
 
-                            # Update token tracker (using UnifiedResponse)
-                            usage_dict = {
-                                'prompt_tokens': resp.token_usage.prompt_tokens,
-                                'completion_tokens': resp.token_usage.completion_tokens,
-                                'total_tokens': resp.token_usage.total_tokens
-                            }
-                            token_tracker.update(usage_dict)
-
-                            # Update cost calculator
+                            # Update session tracking
+                            token_tracker.update(resp)
                             cost_calculator.update_cumulative_cost(
                                 resp.token_usage.prompt_tokens,
                                 resp.token_usage.completion_tokens
@@ -453,21 +285,18 @@ def main():
                                     "provider": resp.provider,
                                     "model": resp.model,
                                     "latency_ms": resp.latency_ms,
-                                    "prompt_tokens": resp.token_usage.prompt_tokens,
-                                    "completion_tokens": resp.token_usage.completion_tokens,
-                                    "total_tokens": resp.token_usage.total_tokens,
-                                    "cost": resp.estimated_cost,
-                                    "finish_reason": resp.finish_reason
+                                    "tokens": resp.token_usage.total_tokens,
+                                    "cost": resp.estimated_cost
                                 }}
                             )
 
-                            # Display stats (cost is already calculated in UnifiedResponse)
+                            # Display stats
                             print(f"[Tokens: {resp.token_usage.total_tokens} | "
                                   f"Cost: {cost_calculator.format_cost(resp.estimated_cost)} | "
                                   f"Latency: {resp.latency_ms}ms]\n")
 
                 except Exception as e:
-                    # Ensure loading is stopped even if there's an unexpected error
+                    # Ensure loading is stopped
                     stop_animation.set()
                     loading_thread.join()
                     conversation.pop_last_user()
