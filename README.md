@@ -169,7 +169,7 @@ curl -X POST http://localhost:8000/v1/compare \
   - Output capped at 1024 tokens
   - Compare: 2-4 targets, context only with ≤2 targets
 
-See [FASTAPI_README.md](./FASTAPI_README.md) for complete API documentation.
+See [FASTAPI_README.md](docs/FASTAPI_README.md) for complete API documentation.
 
 ## Unified Response Contract
 
@@ -207,7 +207,7 @@ if resp.is_error:
 - ✅ **Pre-calculated costs**: No separate calculation needed
 - ✅ **Standardized errors**: 6 error codes (timeout, auth, rate_limit, bad_request, provider_error, unknown)
 
-See [UNIFIED_RESPONSE_CONTRACT.md](./UNIFIED_RESPONSE_CONTRACT.md) for complete documentation.
+See [UNIFIED_RESPONSE_CONTRACT.md](docs/UNIFIED_RESPONSE_CONTRACT.md) for complete documentation.
 
 ## Logging System
 
@@ -266,7 +266,7 @@ The JSON format is ready for enterprise logging systems:
 - **Datadog**: Configure Datadog Agent
 - **Splunk**: Use Splunk Forwarder
 
-See [LOGGING.md](./LOGGING.md) for complete documentation and integration guides.
+See [LOGGING.md](docs/LOGGING.md) for complete documentation and integration guides.
 
 ## Supported Models
 
@@ -660,11 +660,11 @@ class NewProviderClient(BaseAIClient):
 
 ## Documentation
 
-- [UNIFIED_RESPONSE_CONTRACT.md](./UNIFIED_RESPONSE_CONTRACT.md) - Complete response contract documentation
-- [LOGGING.md](./LOGGING.md) - Logging system documentation and integration guides
+- [UNIFIED_RESPONSE_CONTRACT.md](docs/UNIFIED_RESPONSE_CONTRACT.md) - Complete response contract documentation
+- [LOGGING.md](docs/LOGGING.md) - Logging system documentation and integration guides
 - [BILLING_ARCHITECTURE.md](./BILLING_ARCHITECTURE.md) - Billing system architecture design (future feature)
-- [PROJECT_MAP.md](./PROJECT_MAP.md) - Project overview and quick reference map
-- [CHANGELOG.md](./CHANGELOG.md) - Version history and change log
+- [PROJECT_MAP.md](docs/PROJECT_MAP.md) - Project overview and quick reference map
+- [CHANGELOG.md](docs/CHANGELOG.md) - Version history and change log
 - [tests/README.md](./tests/README.md) - Test suite documentation
 
 ## License
