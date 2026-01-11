@@ -34,6 +34,8 @@ Thumbs.db
 # Logs directory - ignore all log files but keep directory structure
 logs/*.log
 logs/*.log.*
+tests/logs/*.log
+tests/logs/*.log.*
 
 # Test coverage
 .coverage
