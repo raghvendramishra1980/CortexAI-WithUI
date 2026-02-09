@@ -1,13 +1,15 @@
 """Compare endpoint for multi-model requests."""
 
 import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, status
-from orchestrator.core import CortexOrchestrator
+
 from models.user_context import UserContext
+from orchestrator.core import CortexOrchestrator
+from server.dependencies import get_api_key, get_orchestrator
 from server.schemas.requests import CompareRequest
 from server.schemas.responses import CompareResponseDTO
-from server.dependencies import get_api_key, get_orchestrator
-from server.utils import validate_and_trim_context, clamp_max_tokens
+from server.utils import clamp_max_tokens, validate_and_trim_context
 
 router = APIRouter(prefix="/v1", tags=["Compare"])
 
@@ -26,38 +28,32 @@ def _build_user_context(context_req):
             for item in context_req.conversation_history
         ]
 
-    return UserContext(
-        session_id=context_req.session_id,
-        conversation_history=history
-    )
+    return UserContext(session_id=context_req.session_id, conversation_history=history)
 
 
 @router.post("/compare", response_model=CompareResponseDTO)
 async def compare(
     request: CompareRequest,
     orchestrator: CortexOrchestrator = Depends(get_orchestrator),
-    api_key: str = Depends(get_api_key)
+    api_key: str = Depends(get_api_key),
 ):
     """Send a prompt to multiple AI models and compare responses."""
     if len(request.targets) > MAX_COMPARE_TARGETS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Maximum {MAX_COMPARE_TARGETS} targets allowed"
+            detail=f"Maximum {MAX_COMPARE_TARGETS} targets allowed",
         )
 
     if request.context and len(request.targets) > 2:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Context not allowed with more than 2 targets"
+            detail="Context not allowed with more than 2 targets",
         )
 
     request.context = validate_and_trim_context(request.context)
     context = _build_user_context(request.context)
 
-    models_list = [
-        {"provider": t.provider, "model": t.model or ""}
-        for t in request.targets
-    ]
+    models_list = [{"provider": t.provider, "model": t.model or ""} for t in request.targets]
 
     kwargs = {}
     if request.temperature is not None:
@@ -65,6 +61,7 @@ async def compare(
     if request.max_tokens is not None:
         kwargs["max_tokens"] = clamp_max_tokens(request.max_tokens)
 
+    research_mode = request.research_mode or "off"
     response = await asyncio.to_thread(
         orchestrator.compare,
         prompt=request.prompt,
@@ -72,8 +69,8 @@ async def compare(
         context=context,
         timeout_s=request.timeout_s,
         token_tracker=None,
-        research_mode=request.research_mode,
-        **kwargs
+        research_mode=research_mode,
+        **kwargs,
     )
 
     return CompareResponseDTO.from_multi_unified_response(response)
