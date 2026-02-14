@@ -9,6 +9,7 @@ A Python command-line application that provides an interactive chat interface wi
 - **Unified Response Contract**: Provider-agnostic response format with immutable dataclasses
 - **Interactive CLI**: User-friendly command-line interface with loading animations
 - **FastAPI Integration**: RESTful HTTP API with authentication and request tracking
+- **Prompt Optimizer**: AI-powered prompt optimization with multi-stage validation and structured JSON output
 - **Token Tracking**: Real-time monitoring of token usage (prompt, completion, and total)
 - **Cost Calculation**: Automatic cost estimation based on current pricing for all models
 - **Request Tracking**: Unique request IDs (UUID) for distributed tracing
@@ -19,6 +20,7 @@ A Python command-line application that provides an interactive chat interface wi
 ### Enterprise Features
 - **Structured JSON Logging**: Production-ready logging system with rotating file handlers
 - **Centralized Log Aggregation Ready**: JSON format compatible with ELK Stack, Grafana Loki, Datadog
+- **CI/CD Pipeline**: Comprehensive GitHub Actions workflow with quality gates (Ruff, Black, MyPy, Pytest, pip-audit, Gitleaks)
 - **Error Normalization**: Standardized error codes across all providers
 - **No Exceptions Bubble Up**: All errors returned as structured responses
 - **Session Statistics**: View cumulative token usage and costs during your session
@@ -73,9 +75,13 @@ A Python command-line application that provides an interactive chat interface wi
    DEFAULT_DEEPSEEK_MODEL=deepseek-chat
    DEFAULT_GROK_MODEL=grok-4-latest
 
-   # Logging configuration (NEW)
+   # Logging configuration
    LOG_LEVEL=INFO                    # DEBUG, INFO, WARNING, ERROR, CRITICAL
    LOG_TO_CONSOLE=false              # Keep console clean for chat
+
+   # Prompt Optimizer configuration (optional)
+   PROMPT_OPTIMIZER_PROVIDER=openai  # 'openai' or 'gemini' (default: openai)
+   PROMPT_OPTIMIZER_MODEL=gpt-4o-mini  # Model for prompt optimization
    ```
 
 ## Usage
@@ -118,7 +124,55 @@ A Python command-line application that provides an interactive chat interface wi
    Last updated: 2026-01-04T00:45:12.123456
    ```
 
-## FastAPI Server (NEW)
+## Prompt Optimizer
+
+The Prompt Optimizer is an AI-powered utility that improves user-provided prompts for clarity, specificity, and effectiveness.
+
+### Quick Start
+
+```bash
+# Run the quick test utility
+python quick_test_optimizer.py
+```
+
+### Programmatic Usage
+
+```python
+from utils.prompt_optimizer import PromptOptimizer
+
+# Initialize optimizer (auto-detects provider from env)
+optimizer = PromptOptimizer()
+
+# Optimize a prompt
+result = optimizer.optimize_prompt({
+    "prompt": "write code for sorting",
+    "settings": {"focus": "clarity", "audience": "beginners"}
+})
+
+print(result["optimized_prompt"])
+print(result.get("steps", []))  # Optimization steps
+print(result.get("metrics", {}))  # Quality metrics
+```
+
+### Features
+
+- ✅ **Multi-Provider Support**: Works with OpenAI and Google Gemini
+- ✅ **Auto-Detection**: Reads `PROMPT_OPTIMIZER_PROVIDER` from `.env`
+- ✅ **Structured Output**: Returns JSON with `optimized_prompt`, `steps`, `explanations`, and `metrics`
+- ✅ **Multi-Stage Validation**: Input validation, AI optimization, output validation
+- ✅ **Self-Correction**: Retries with explicit schema instructions on validation failure
+- ✅ **Error Handling**: Comprehensive error handling with exponential backoff
+
+### Configuration
+
+```bash
+# .env file
+PROMPT_OPTIMIZER_PROVIDER=openai  # or 'gemini'
+PROMPT_OPTIMIZER_MODEL=gpt-4o-mini  # Optional: override default model
+PROMPT_OPTIMIZER_GEMINI_MODEL=gemini-2.0-flash-exp  # Optional: Gemini model
+```
+
+## FastAPI Server
 
 ### Quick Start
 
@@ -383,6 +437,7 @@ OpenAIProject/
 │   ├── token_tracker.py           # Token usage tracking
 │   ├── cost_calculator.py         # Cost calculation logic
 │   ├── model_utils.py             # Model utility functions
+│   ├── prompt_optimizer.py        # AI-powered prompt optimization
 │   └── GeminiAvailableModels.py   # Gemini model listing utility
 │
 ├── logs/                          # Log files (gitignored)
@@ -494,8 +549,11 @@ All API clients inherit from `BaseAIClient` and implement:
 | `DEFAULT_GEMINI_MODEL` | Default Gemini model | `gemini-2.5-flash-lite` | `gemini-1.5-flash` |
 | `DEFAULT_DEEPSEEK_MODEL` | Default DeepSeek model | `deepseek-chat` | `deepseek-chat` |
 | `DEFAULT_GROK_MODEL` | Default Grok model | `grok-4-latest` | `grok-4-latest` |
-| **`LOG_LEVEL`** (NEW) | Logging verbosity | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | `INFO` |
-| **`LOG_TO_CONSOLE`** (NEW) | Log errors to console | `true`, `false` | `false` |
+| `LOG_LEVEL` | Logging verbosity | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | `INFO` |
+| `LOG_TO_CONSOLE` | Log errors to console | `true`, `false` | `false` |
+| `PROMPT_OPTIMIZER_PROVIDER` | Prompt optimizer provider | `openai`, `gemini` | `openai` |
+| `PROMPT_OPTIMIZER_MODEL` | Prompt optimizer model | `gpt-4o-mini` | `gpt-4o-mini` |
+| `PROMPT_OPTIMIZER_GEMINI_MODEL` | Prompt optimizer Gemini model | `gemini-2.0-flash-exp` | `gemini-2.0-flash-exp` |
 
 ### Switching Providers
 
@@ -766,6 +824,8 @@ This project is open source and available under the MIT License.
 ### Recent Major Updates
 - **Database Integration**: Persistent storage with SQLAlchemy (`db/`)
 - **Research Tools**: Web research capabilities with Tavily (`tools/web/`)
+- **Prompt Optimizer**: AI-powered prompt optimization with multi-stage validation (`utils/prompt_optimizer.py`)
+- **CI/CD Pipeline**: GitHub Actions workflow with comprehensive quality gates (`.github/workflows/ci.yml`)
 - **Modern Packaging**: `pyproject.toml` configuration
-- **Enhanced Testing**: Comprehensive test suite with FastAPI contract tests
+- **Enhanced Testing**: Comprehensive test suite with 100+ tests across all modules
 - **Documentation**: Complete docs in `docs/` directory
